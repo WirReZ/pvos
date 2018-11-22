@@ -1,0 +1,80 @@
+
+
+	client_len = sizeof(sa_cli);
+	sd = accept(master_socket, (struct sockaddr*) &sa_cli, &client_len); CHK_ERR(sd, "accept");
+
+	close(master_socket);
+
+	printf("Connection from %s, port %d\n", inet_ntoa(sa_cli.sin_addr),
+			sa_cli.sin_port);
+
+	/* ----------------------------------------------- */
+	/* TCP connection is ready. Do server side SSL. */
+
+	ssl = SSL_new(ctx);
+	CHK_NULL(ssl);
+	SSL_set_fd(ssl, sd);
+	err = SSL_accept(ssl);
+	CHK_SSL(err);
+
+	/* Get the cipher - opt */
+	printf("SSL connection using %s\n", SSL_get_cipher(ssl));
+
+	/* Get client's certificate (note: beware of dynamic allocation) - opt */
+
+	client_cert = SSL_get_peer_certificate(ssl);
+	if (client_cert != NULL) {
+		printf("Client certificate:\n");
+
+		char *str = X509_NAME_oneline(X509_get_subject_name(client_cert), 0, 0);
+		CHK_NULL(str);
+		printf("\t subject: %s\n", str);
+		OPENSSL_free(str);
+
+		str = X509_NAME_oneline(X509_get_issuer_name(client_cert), 0, 0);
+		CHK_NULL(str);
+		printf("\t issuer: %s\n", str);
+		OPENSSL_free(str);
+
+		X509_free(client_cert);
+	} else
+		printf("Client does not have certificate.\n");
+
+	/* DATA EXCHANGE - Receive message and send reply. */
+
+	long total_bytes = 0;
+	long num_lines = 0;
+	SSLReadLine reader = SSLReadLine(sd, ssl, 5);
+	while (1) {
+		err = reader.readline();
+		CHK_SSL(err);
+		char *buf = reader.toString();
+		//err = reader.readline();
+
+		if (err <= 0) break;
+
+		total_bytes += err;
+
+		// parse line
+		int tmp, parsed, buf_inx;
+		long sum = 0;
+		sscanf(buf, "(%d)%n", &tmp, &buf_inx);
+
+		while (1 == sscanf(buf + buf_inx, "%d%n", &tmp, &parsed)) {
+			sum += tmp;
+			buf_inx += parsed;
+		}
+		sum /= 2;
+		char sendbuf[4096];
+		// send answer
+		sprintf(sendbuf, "%ld %ld %ld\n", num_lines++, sum, total_bytes);
+		err = SSL_write(ssl, sendbuf, strlen(sendbuf));
+		CHK_SSL(err);
+
+	}
+
+
+
+	close(sd);
+	SSL_free(ssl);
+	SSL_CTX_free(ctx);
