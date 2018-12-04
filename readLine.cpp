@@ -3,9 +3,10 @@
 readLine::readLine(int fd, int tim_out) {
 	this->line = 0;
 	this->charCounter = 0;
-	this->maxBufferLen = 1024;
-	this->buffer = (char*) malloc(this->maxBufferLen * sizeof(char));
-	this->internalBuffer = (char*) malloc(this->maxBufferLen * sizeof(char));
+	this->maxBufferLen = 64;
+	this->buffer = (char*) malloc(this->maxBufferLen * sizeof(char) + 1);
+	this->internalBuffer = (char*) malloc(
+			this->maxBufferLen * sizeof(char) + 1);
 	this->fd = fd;
 
 	FD_ZERO(&this->readset);
@@ -18,7 +19,10 @@ readLine::readLine(int fd, int tim_out) {
 int readLine::readline() {
 	while (1) {
 		int ret = select(this->fd + 1, &this->readset, nullptr, nullptr,
-				&this->timeout);
+				nullptr); // &this->timeout
+		if (ret < 0) {
+			return -1;
+		}
 		if (ret > 0 && FD_ISSET(this->fd, &this->readset)) {
 			int available_spaces = this->maxBufferLen - this->charCounter;
 			if (available_spaces <= 0) {
@@ -46,14 +50,15 @@ int readLine::readline() {
 					charCounter -= position_new_line;
 					memcpy(this->internalBuffer,
 							this->internalBuffer + position_new_line,
-							charCounter);
+							charCounter + 1);
 					return position_new_line;
 				}
 
 			} else
 				return 0;
 		} else
-			return -1; // timeout
+			return -1;  // timeout
+
 
 	}
 }
@@ -73,8 +78,10 @@ int SSLReadLine::readline() {
 
 	while (1) {
 		int ret = select(this->fd + 1, &this->readset, nullptr, nullptr,
-				&this->timeout);
-
+				nullptr);
+		if (ret < 0) {
+			return -1;
+		}
 		if (ret > 0 && FD_ISSET(this->fd, &this->readset)) {
 
 			int available_spaces = this->maxBufferLen - this->charCounter;
@@ -82,9 +89,9 @@ int SSLReadLine::readline() {
 
 				maxBufferLen *= 2;
 				this->buffer = (char*) realloc(this->buffer,
-						maxBufferLen * sizeof(char));
+						maxBufferLen * sizeof(char) + 1);
 				this->internalBuffer = (char*) realloc(this->internalBuffer,
-						maxBufferLen * sizeof(char));
+						maxBufferLen * sizeof(char) + 1);
 				available_spaces = this->maxBufferLen - this->charCounter;
 			}
 
@@ -112,7 +119,7 @@ int SSLReadLine::readline() {
 			} else
 				return 0;
 		} else
-			return -1; // timeout
+		  	return -1; // timeout
 
 	}
 }

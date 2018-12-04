@@ -103,8 +103,8 @@ void *ssl_thread( void * thread_arg )
 		err = sem_wait( &sem_queue_mutex );								CHK_ERR(err, "wait sem_queue_mutex");
 		qli = queue_line_info.front();
 		queue_line_info.pop();
-		sem_post( &sem_queue_mutex );									CHK_ERR(err, "post sem_queue_mutex");
-		sem_post( &sem_queue_limit );									CHK_ERR(err, "post sem_queue_limit");
+		err = sem_post( &sem_queue_mutex );									CHK_ERR(err, "post sem_queue_mutex");
+		err = sem_post( &sem_queue_limit );									CHK_ERR(err, "post sem_queue_limit");
 
 		if ( rli.line != qli.line || rli.sum != qli.sum || rli.total != qli.total )
 		{
