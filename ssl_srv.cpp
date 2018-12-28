@@ -11,6 +11,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <time.h>
 
 #include <openssl/rsa.h>
 #include <openssl/crypto.h>
@@ -26,6 +27,7 @@
 
 #include <sys/ipc.h>
 #include <sys/msg.h>
+#include <semaphore.h>
 
 /* define HOME to be dir for key and cert files... */
 #define HOME "./keys/"
@@ -37,8 +39,13 @@
 #define CHK_ERR(err,s) if ((err)==-1) { perror(s); exit(1); }
 #define CHK_SSL(err) if ((err)==-1) { ERR_print_errors_fp(stderr); exit(2); }
 
+#define LIMIT 30
+int queue = msgget(0XABCDABCD, 0660 | IPC_CREAT);
+sem_t semaphore;
+long thread_total_lines = 0;
+
 struct zprava {
-	long typ; // musi byt urcet typ zpravy
+	long typ;
 	char buf[2048];
 };
 
@@ -51,24 +58,70 @@ public:
 	long num_lines = 0;
 	Client(int fd, SSL* ssl) {
 		this->fd = fd;
-		this->reader = new SSLReadLine(fd, ssl, 10);
+		this->reader = new SSLReadLine(fd, ssl, 0);
 		this->ssl = ssl;
 	}
 };
+//----------Signal handlers
 void sigpipe_handler(int num, siginfo_t* info, void* data) {
 }
+void sigchld_handler(int num, siginfo_t* info, void* data) {
+	int pid;
+	while ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
+		printf("Server %d finished.\n", pid);
+}
+//---------- End of signal handlers
+//Statistics
+void showStatistics(long num, long lines, int seconds) {
+	printf("=========== (%d) ===========\n", seconds);
+	printf("Clients:%ld, lines:%ld\n", num, lines);
+	printf("============================\n");
 
-int queue = msgget(0XABCDABCD, 0660 | IPC_CREAT);
+}
+void *run_calculationg_thread_onthread(void * num_clients) {
+	int *x_ptr = (int *) num_clients;
+	time_t start = time(NULL);
+	int seconds = 0;
+
+	while (1) {
+		if ((time(NULL) - start) >= LIMIT) {
+			seconds += LIMIT;
+			showStatistics((*x_ptr), thread_total_lines, seconds);
+			start = time(NULL);
+		}
+	}
+}
+void *run_calculationg_thread_onprocess(void * num_client) {
+	int *x_ptr = (int *) num_client;
+	int queue = msgget(0XABCDABCD, 0660 | IPC_CREAT);
+	time_t start = time(NULL);
+	int seconds = 0;
+
+	long total_lines = 0;
+	zprava zp;
+	while (1) {
+		int len = msgrcv(queue, &zp, sizeof(zp.buf), 1, 0);
+		zp.buf[len] = 0;
+		long int total;
+		sscanf(zp.buf, "%ld\n", &total);
+		total_lines += total;
+		if ((time(NULL) - start) >= LIMIT) {
+			seconds += LIMIT;
+			showStatistics((*x_ptr), total_lines, seconds);
+			start = time(NULL);
+		}
+	}
+
+	return 0;
+
+}
+//End of statistics
 
 void run_server_fork(int* sck, SSL_CTX* ctx) {
 
-	int client_socket;
+	int client_socket = *sck;
 	int err;
-
 	zprava zp;
-	client_socket = *sck;
-	CHK_ERR(client_socket, "accept");
-
 	SSL* ssl = SSL_new(ctx);
 	CHK_NULL(ssl);
 	SSL_set_fd(ssl, client_socket);
@@ -80,15 +133,15 @@ void run_server_fork(int* sck, SSL_CTX* ctx) {
 	long total_bytes = 0;
 	long num_lines = 0;
 	long int total_queue = 0;
+	long int loaded_lines = 0;
 
 	while (1) {
-
 		err = client.reader->readline();
-		if (err < 0) { // Disconnected client !
+		if (err < 0) {
 			printf("%d err\n", err);
 			break;
 		}
-		if (err == 0) {
+		if (err == 0) { // Disconnected client !
 			printf("Client disconnected\n");
 			break;
 		}
@@ -97,7 +150,7 @@ void run_server_fork(int* sck, SSL_CTX* ctx) {
 
 		// parse line
 		int tmp, parsed, buf_inx;
-		long sum = 0, f_sum = 0, num_linesa = 0, total_bytesa = 0; // podle me by melo byt total_bytes a num_lines jinak ! a to kazdy fork mit svuj !
+		long sum = 0, f_sum = 0, num_linesa = 0, total_bytesa = 0;
 
 		sscanf(buf, "(%d)%n", &tmp, &buf_inx);
 		while (1 == sscanf(buf + buf_inx, "%d%n", &tmp, &parsed)) {
@@ -109,23 +162,16 @@ void run_server_fork(int* sck, SSL_CTX* ctx) {
 
 		char sendbuf[4096];
 		// send answer
-		sprintf(sendbuf, "%ld %ld %ld\n", num_lines, sum,
-				total_queue + total_bytes);
+		sprintf(sendbuf, "%ld %ld %ld\n", num_lines, sum, total_bytes);
 		num_lines++;
+		loaded_lines++;
+		if (loaded_lines >= 50) {
+			zp.typ = 1;
+			sprintf(zp.buf, "%ld\n", loaded_lines);
+			msgsnd(queue, &zp, strlen(zp.buf), getpid());
+			loaded_lines = 0;
+		}
 
-		/*int len = msgrcv(queue, &zp, sizeof(zp.buf), 1, IPC_NOWAIT);
-		 if (errno != ENOMSG) {
-		 zp.buf[len] = 0;
-
-		 sscanf(zp.buf, "%ld\n", &total_queue);
-		 zp.typ = 1;
-		 total_queue += total_bytes;
-		 total_bytes = 0;
-		 sprintf(zp.buf, "%ld\n", total_queue);
-
-		 msgsnd(queue, &zp, strlen(zp.buf), getpid());
-		 }
-		 */
 		err = SSL_write(client.ssl, sendbuf, strlen(sendbuf));
 		CHK_SSL(err);
 		if (err == -1) {
@@ -133,7 +179,6 @@ void run_server_fork(int* sck, SSL_CTX* ctx) {
 		}
 
 	}
-
 	close(client.fd);
 	SSL_free(client.ssl);
 }
@@ -142,7 +187,8 @@ void* run_server_thread(void* clnt) {
 	Client client = *(Client*) clnt;
 	long total_bytes = 0;
 	long num_lines = 0;
-	long int total_queue = 0;
+	long queue_num_lines = 0;
+
 	int err;
 	while (1) {
 
@@ -172,9 +218,15 @@ void* run_server_thread(void* clnt) {
 
 		char sendbuf[4096];
 		// send answer
-		sprintf(sendbuf, "%ld %ld %ld\n", num_lines, sum,
-				total_queue + total_bytes);
+		sprintf(sendbuf, "%ld %ld %ld\n", num_lines, sum, total_bytes);
 		num_lines++;
+		queue_num_lines++;
+		if(queue_num_lines >= 50 && sem_trywait(&semaphore) == 0)
+		{
+			thread_total_lines+=queue_num_lines;
+			sem_post(&semaphore);
+			queue_num_lines = 0;
+		}
 
 		err = SSL_write(client.ssl, sendbuf, strlen(sendbuf));
 		CHK_SSL(err);
@@ -186,7 +238,9 @@ void* run_server_thread(void* clnt) {
 
 	close(client.fd);
 	SSL_free(client.ssl);
+	return NULL;
 }
+
 int main(int argc, char **argv) {
 	int err;
 	int master_socket;
@@ -209,7 +263,7 @@ int main(int argc, char **argv) {
 	int thread_flag = 0;
 	// Settings constants
 
-	//getopt
+	//getopt - Select a method to use !
 	opterr = 0;
 	char * param = NULL;
 	char c;
@@ -221,12 +275,10 @@ int main(int argc, char **argv) {
 			break;
 		case 'p':
 			process_flag = 1;
-			//sscanf(optarg, "%d", &process_number);
 			printf("Server starting with process method\n");
 			break;
 		case 't':
 			thread_flag = 1;
-			//sscanf(optarg, "%d", &thread_number);
 			printf("Server starting with thread method \n");
 			break;
 		case '?':
@@ -271,17 +323,20 @@ int main(int argc, char **argv) {
 	/* Receive a TCP connection. */
 	err = listen(master_socket, 5);
 	CHK_ERR(err, "listen");
-
-	// SELECT SECITON !!!!
+//--------------------- SELECTION METHOD --------------------------------------------
 	if (select_flag == 1) {
 		struct sigaction action { };
+		sigemptyset(&action.sa_mask);
 		action.sa_sigaction = sigpipe_handler;
 		action.sa_flags = SA_SIGINFO | SA_RESTART;
-		sigemptyset(&action.sa_mask);
 		sigaction(SIGPIPE, &action, nullptr);
 
 		std::vector<Client> clients;
+		long total_num_lines = 0;
+		time_t start = time(NULL);
+		int seconds = 0;
 
+		bool done = false;
 		while (1) {
 			fd_set waiting_set;
 			FD_ZERO(&waiting_set);
@@ -291,10 +346,10 @@ int main(int argc, char **argv) {
 			//Loop over clients to add client to select
 
 			for (int i = 0; i < clients.size(); i++) {
-
 				FD_SET(clients[i].fd, &waiting_set);
 				last_sd = clients[i].fd;
 			}
+
 			int sel = select(last_sd + 1, &waiting_set, NULL, NULL, NULL);
 
 			if (sel < 0) {
@@ -318,9 +373,17 @@ int main(int argc, char **argv) {
 				printf("SSL connection using %s\n", SSL_get_cipher(ssl));
 
 				clients.push_back(Client(sd, ssl));
+				//Start timer if not running
+				start = time(NULL);
+
 			}
 
 			for (int i = 0; i < clients.size(); i++) {
+				if ((time(NULL) - start) >= LIMIT) {
+					done = true;
+					break;
+				}
+
 				if (FD_ISSET(clients[i].fd, &waiting_set)) {
 
 					err = clients[i].reader->readline();
@@ -330,7 +393,6 @@ int main(int argc, char **argv) {
 						SSL_free(clients[i].ssl);
 
 						clients.erase(clients.begin() + i);
-						//break;
 						continue;
 					}
 
@@ -353,40 +415,67 @@ int main(int argc, char **argv) {
 					// send answer
 					sprintf(sendbuf, "%ld %ld %ld\n", clients[i].num_lines++,
 							sum, clients[i].total_bytes);
+					total_num_lines++;
 
 					err = SSL_write(clients[i].ssl, sendbuf, strlen(sendbuf));
-
 					CHK_SSL(err);
-
 				}
 			}
+			if (done) {
+				seconds += LIMIT;
+				showStatistics(clients.size(), total_num_lines, seconds);
+				start = time(NULL);
+				done = false;
+
+			}
 		}
-	} else if (process_flag == 1) {
+	}
+//--------------------- PROCESS METHOD --------------------------------------------
+	else if (process_flag == 1) {
+		struct sigaction action { };
+		action.sa_sigaction = sigchld_handler;
+		action.sa_flags = SA_SIGINFO | SA_RESTART;
+		sigemptyset(&action.sa_mask);
+		sigaction(SIGCHLD, &action, nullptr);
+
 		zprava zp;
 		zp.typ = 1;
 		sprintf(zp.buf, "0");
 		msgsnd(queue, &zp, strlen(zp.buf), 0);
-
+		//Start thread for statistic
+		int num_clients = 0;
+		pthread_t calculate_tid;
+		pthread_create(&calculate_tid, nullptr,
+				run_calculationg_thread_onprocess, &num_clients);
+		//Start processing accepting
 		while (1) {
 			client_len = sizeof(sa_cli);
 			int client_socket = accept(master_socket,
 					(struct sockaddr*) &sa_cli, &client_len);
 			CHK_ERR(client_socket, "accept");
-
+			num_clients++;
 			if (fork() == 0) {
 				printf("PID: %d => Connection from %s, port %d\n", getpid(),
 						inet_ntoa(sa_cli.sin_addr), sa_cli.sin_port);
 				run_server_fork(&client_socket, ctx);
-				exit(0);
 			}
-			int pid;
-			while ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
-				printf("Server %d finished.\n", pid);
 		}
-
-	} else if (process_flag == 0 && thread_flag == 1) {
+		int pid;
+		while ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
+			printf("Server %d finished.\n", pid);
+		//pthread_join(calculate_tid, NULL);
+	}
+//--------------------- THREAD METHOD --------------------------------------------
+	else if (thread_flag == 1) {
 		std::vector<pthread_t> ssl_tid;
 		int i = 0;
+		pthread_t calculate_tid;
+		pthread_create(&calculate_tid, nullptr,
+				run_calculationg_thread_onthread, &i);
+		if (sem_init(&semaphore, 0, 1) < 0) {
+			perror("sem_init");
+			exit(1);
+		}
 		while (1) {
 			client_len = sizeof(sa_cli);
 			int client_socket = accept(master_socket,

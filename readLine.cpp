@@ -12,8 +12,8 @@ readLine::readLine(int fd, int tim_out) {
 	FD_ZERO(&this->readset);
 	FD_SET(fd, &this->readset);
 
-	timeout.tv_sec = 0;
-	timeout.tv_usec = tim_out * 1000 * 1000;
+	//timeout.tv_sec = 0;
+	//timeout.tv_usec = tim_out * 1000 * 1000;
 
 }
 int readLine::readline() {
