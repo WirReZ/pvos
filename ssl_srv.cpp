@@ -40,6 +40,7 @@
 #define CHK_SSL(err) if ((err)==-1) { ERR_print_errors_fp(stderr); exit(2); }
 
 #define LIMIT 30
+#define SYNCHRONIZE_LIMIT 20
 int queue = msgget(0XABCDABCD, 0660 | IPC_CREAT);
 sem_t semaphore;
 long thread_total_lines = 0;
@@ -89,6 +90,7 @@ void *run_calculationg_thread_onthread(void * num_clients) {
 			showStatistics((*x_ptr), thread_total_lines, seconds);
 			start = time(NULL);
 		}
+		usleep(1000);
 	}
 }
 void *run_calculationg_thread_onprocess(void * num_client) {
@@ -102,7 +104,7 @@ void *run_calculationg_thread_onprocess(void * num_client) {
 	while (1) {
 		int len = msgrcv(queue, &zp, sizeof(zp.buf), 1, 0);
 		zp.buf[len] = 0;
-		long int total;
+		long total;
 		sscanf(zp.buf, "%ld\n", &total);
 		total_lines += total;
 		if ((time(NULL) - start) >= LIMIT) {
@@ -110,6 +112,7 @@ void *run_calculationg_thread_onprocess(void * num_client) {
 			showStatistics((*x_ptr), total_lines, seconds);
 			start = time(NULL);
 		}
+
 	}
 
 	return 0;
@@ -165,7 +168,7 @@ void run_server_fork(int* sck, SSL_CTX* ctx) {
 		sprintf(sendbuf, "%ld %ld %ld\n", num_lines, sum, total_bytes);
 		num_lines++;
 		loaded_lines++;
-		if (loaded_lines >= 50) {
+		if (loaded_lines >= SYNCHRONIZE_LIMIT) {
 			zp.typ = 1;
 			sprintf(zp.buf, "%ld\n", loaded_lines);
 			msgsnd(queue, &zp, strlen(zp.buf), getpid());
@@ -221,7 +224,7 @@ void* run_server_thread(void* clnt) {
 		sprintf(sendbuf, "%ld %ld %ld\n", num_lines, sum, total_bytes);
 		num_lines++;
 		queue_num_lines++;
-		if(queue_num_lines >= 50 && sem_trywait(&semaphore) == 0)
+		if(queue_num_lines >= SYNCHRONIZE_LIMIT && sem_trywait(&semaphore) == 0)
 		{
 			thread_total_lines+=queue_num_lines;
 			sem_post(&semaphore);
@@ -311,6 +314,9 @@ int main(int argc, char **argv) {
 
 	master_socket = socket(AF_INET, SOCK_STREAM, 0);
 	CHK_ERR(master_socket, " listen socket");
+	int enable = 1;
+	setsockopt(master_socket, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+
 
 	memset(&sa_serv, '\0', sizeof(sa_serv));
 	sa_serv.sin_family = AF_INET;
@@ -336,7 +342,7 @@ int main(int argc, char **argv) {
 		time_t start = time(NULL);
 		int seconds = 0;
 
-		bool done = false;
+
 		while (1) {
 			fd_set waiting_set;
 			FD_ZERO(&waiting_set);
@@ -379,10 +385,7 @@ int main(int argc, char **argv) {
 			}
 
 			for (int i = 0; i < clients.size(); i++) {
-				if ((time(NULL) - start) >= LIMIT) {
-					done = true;
-					break;
-				}
+
 
 				if (FD_ISSET(clients[i].fd, &waiting_set)) {
 
@@ -421,12 +424,10 @@ int main(int argc, char **argv) {
 					CHK_SSL(err);
 				}
 			}
-			if (done) {
+			if ((time(NULL) - start) >= LIMIT) {
 				seconds += LIMIT;
 				showStatistics(clients.size(), total_num_lines, seconds);
 				start = time(NULL);
-				done = false;
-
 			}
 		}
 	}
