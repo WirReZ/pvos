@@ -12,14 +12,11 @@ readLine::readLine(int fd, int tim_out) {
 	FD_ZERO(&this->readset);
 	FD_SET(fd, &this->readset);
 
-	//timeout.tv_sec = 0;
-	//timeout.tv_usec = tim_out * 1000 * 1000;
-
 }
 int readLine::readline() {
 	while (1) {
 		int ret = select(this->fd + 1, &this->readset, nullptr, nullptr,
-				nullptr); // &this->timeout
+				nullptr);
 		if (ret < 0) {
 			return -1;
 		}
@@ -52,7 +49,7 @@ int readLine::readline() {
 							this->internalBuffer + position_new_line,
 							charCounter + 1);
 					return position_new_line;
-				}
+				}return 0;
 
 			} else
 				return 0;
@@ -115,7 +112,7 @@ int SSLReadLine::readline() {
 							charCounter);
 					return position_new_line;
 
-				}
+				}return 0;
 			} else
 				return 0;
 		} else

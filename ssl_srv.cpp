@@ -112,9 +112,7 @@ void *run_calculationg_thread_onprocess(void * num_client) {
 			showStatistics((*x_ptr), total_lines, seconds);
 			start = time(NULL);
 		}
-
 	}
-
 	return 0;
 
 }
@@ -140,13 +138,12 @@ void run_server_fork(int* sck, SSL_CTX* ctx) {
 
 	while (1) {
 		err = client.reader->readline();
-		if (err < 0) {
-			printf("%d err\n", err);
-			break;
-		}
-		if (err == 0) { // Disconnected client !
+		if (err < 0) { // Disconnected client !
 			printf("Client disconnected\n");
 			break;
+		}
+		if (err == 0) { // not fully line
+			continue;
 		}
 
 		char *buf = client.reader->toString();
@@ -197,12 +194,11 @@ void* run_server_thread(void* clnt) {
 
 		err = client.reader->readline();
 		if (err < 0) { // Disconnected client !
-			printf("%d err\n", err);
+			printf("Client disconnected\n");
 			break;
 		}
 		if (err == 0) {
-			printf("Client disconnected\n");
-			break;
+			continue;
 		}
 
 		char *buf = client.reader->toString();
@@ -390,7 +386,7 @@ int main(int argc, char **argv) {
 				if (FD_ISSET(clients[i].fd, &waiting_set)) {
 
 					err = clients[i].reader->readline();
-					if (err <= 0) {
+					if (err < 0) {
 						printf("Client %d disconnected !\n", i);
 						close(clients[i].fd);
 						SSL_free(clients[i].ssl);
@@ -398,6 +394,7 @@ int main(int argc, char **argv) {
 						clients.erase(clients.begin() + i);
 						continue;
 					}
+					if(err == 0)continue;
 
 					char *buf = clients[i].reader->toString();
 
